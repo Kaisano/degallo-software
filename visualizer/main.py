@@ -89,58 +89,118 @@
 # #     diff = 3.3 - voltage
 # #     # print(diff)
 
-# # # X labels
-# # labels = ["FSR1", "FSR2", "FSR3", "FSR4"]
-
-# # # Initial bar heights
-# # y = np.random.uniform(0, 10, size=4)
-
-# # fig, ax = plt.subplots()
-# # bars = ax.bar(labels, y, color="skyblue")
-
-# # # Set limits
-# # ax.set_ylim(0, 1)
-# # ax.set_ylabel("Value")
-# # ax.set_title("Animated Bar Graph")
-
-# # # Update function for animation
-# # def update(frame):
-# #     # New random values between 0 and 10
-# #     # new_y = np.random.uniform(0, 10, size=4)
-
-# #     s = serial.read_until(b'\n').decode().rstrip()
-# #     voltage = float(re.search(r"voltage:\s*([0-9.]+)", s).group(1))
-# #     diff = 3.3 - voltage
-
-# #     new_y = (diff, 0, 0, 0)
-# #     for bar, h in zip(bars, new_y):
-# #         bar.set_height(h)
-
-# #     return bars
-
-# # # Animate
-# # ani = FuncAnimation(fig, update, frames=None, interval=1, blit=False)
-
-# # plt.show()
+import numpy as np
+from matplotlib import pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 import serial
 import struct
-import time
-ser = serial.Serial("COM3", 115200, timeout=1)
+from enum import Enum
 
-# Struct format:
-# <   = little endian
-# 5f  = 5 floats
-packet_format = "<5f"
-packet_size = struct.calcsize(packet_format)
-header = b"\xAA\x55"
+class SERIAL_STATES(Enum):
+    CONNECT=0,
+    SYNC=1,
+    PARSE=2
 
-while True:
-    # Look for header
-    if ser.read(1) == header[0:1]:
-        if ser.read(1) == header[1:2]:
-            # Read the packet payload
-            data = ser.read(packet_size)
-            if len(data) == packet_size:
-                values = list(struct.unpack(packet_format, data))
-                print("values:", values)
+class app_t():
+    def __init__(self):        
+        # Struct format:
+        # <   = little endian
+        # 5f  = 5 floats
+        self.__packet_format = "<5f"
+        self.__packet_size = struct.calcsize(self.__packet_format)
+
+        self.__key1 = b"\xAA"
+        self.__key2 = b"\x55"
+
+        self.ser: serial.Serial
+        self.state = SERIAL_STATES.CONNECT
+        self.pad_data = list()
+    
+    def connect(self, port: str, baudrate: int):
+        self.ser = serial.Serial(port=port, baudrate=baudrate)
+    
+    def read_packet(self):
+        data = self.ser.read(self.__packet_size)
+        if len(data) == self.__packet_size:
+            self.pad_data = list(struct.unpack(self.__packet_format, data))
+    
+    def sync(self):
+        return \
+            self.ser.read() == self.__key1 and \
+            self.ser.read() == self.__key2
+        
+
+def app_loop(app: app_t):
+    match app.state:
+        case SERIAL_STATES.CONNECT:
+            try:
+                app.connect("COM3", 115200)
+                app.state = SERIAL_STATES.SYNC
+
+            except Exception as e:
+                print(e)
+                # kill thread
+                exit()
+        
+        case SERIAL_STATES.SYNC:
+            try:
+                if app.sync():
+                    app.state = SERIAL_STATES.PARSE
+
+            except Exception as e:
+                print(e)
+                app.ser.close()
+                # kill thread
+                exit()
+        
+        case SERIAL_STATES.PARSE:
+            try: 
+                app.read_packet()
+                print(app.pad_data)
+                app.state = SERIAL_STATES.SYNC
+
+            except Exception as e:
+                print(e)
+                # kill thread
+                exit()
+    
+
+# X labels
+labels = ["FSR1", "FSR2", "FSR3", "FSR4", "FSR5"]
+
+# Initial bar heights
+y = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+fig, ax = plt.subplots()
+bars = ax.bar(labels, y, color="skyblue")
+
+# Set limits
+ax.set_ylim(0, 3.3)
+ax.set_ylabel("Value")
+ax.set_title("Animated Bar Graph")
+
+# Update function for animation
+def update(frame, app:app_t):
+    # New random values between 0 and 10
+    # new_y = np.random.uniform(0, 10, size=4)
+
+    new_y = app.pad_data
+    for bar, h in zip(bars, new_y):
+        bar.set_height(h)
+
+    return bars
+
+def thread1_proc(app:app_t):
+    while True:
+        app_loop(app)
+
+if __name__ == "__main__":
+    app = app_t()
+
+    import threading
+    t1 = threading.Thread(target=thread1_proc, args=(app,), daemon=True)
+    t1.start()
+    
+    ani = FuncAnimation(fig, update, frames=None, interval=1, fargs=(app,))
+    plt.show()
