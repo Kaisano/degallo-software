@@ -18,6 +18,12 @@ typedef uint GPIO;
 uint16_t fsr_sensor_val[ROWS * COLS];
 GPIO row_pins[] = {3, 4, 5, 6};
 
+typedef struct {
+    float voltage[5];
+}  DataPacket_t;
+
+DataPacket_t data;
+
 void app_setup()
 {
     stdio_init_all();
@@ -25,6 +31,12 @@ void app_setup()
     adc_init();
     adc_gpio_init(28);
     adc_select_input(2);
+
+    for(int i = 0; i < 5; i++) {
+        data.voltage[i] = 0.0f;
+    }
+
+
     // adc_gpio_init(ADC1_GPIO);
     // adc_gpio_init(ADC2_GPIO);
 
@@ -37,6 +49,7 @@ void app_setup()
     // }
 }
 
+const uint8_t header[2] = {0xAA, 0x55};
 void app_loop()
 {
 
@@ -73,9 +86,13 @@ void app_loop()
     uint16_t result = adc_read();
     float Vo = result * conversion_factor;
 
-    float FSR = (Vo * 100.0) / (3.3f - Vo);
+    data.voltage[0] = Vo;
+    fwrite(&header, sizeof(header), 1, stdout);
+    fwrite(&data, sizeof(data), 1, stdout);
 
-    printf("voltage: %f, R2: %f\n", result * conversion_factor, FSR);
+    // float FSR = (Vo * 100.0) / (3.3f - Vo);
+
+    // printf("voltage: %f, R2: %f\n", result * conversion_factor, FSR);
     sleep_ms(1);
 }
 
