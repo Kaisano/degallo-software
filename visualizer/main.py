@@ -3,13 +3,6 @@ import multiprocessing
 from multiprocessing import Manager, Process, Event
 from multiprocessing.managers import DictProxy
 
-import time
-
-import numpy as np
-
-from matplotlib import pyplot as plt
-from matplotlib.animation import FuncAnimation
-
 import serial
 from serial.tools import list_ports
 
@@ -135,6 +128,14 @@ class serial_device_manager():
             self.shared_device_data.pop(device)
             self.serial_devices.pop(device)
     
+    def shutdown(self):
+        try:
+            for proc in self.serial_devices.values():
+                proc.shutdown()
+            pass
+        except Exception as e:
+            print(e)
+
 if __name__ == "__main__":
     with Manager() as manager:
         d = manager.dict()
