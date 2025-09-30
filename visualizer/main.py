@@ -1,146 +1,84 @@
 # visualize serial output
-import multiprocessing
-from multiprocessing import Manager, Process, Event
-from multiprocessing.managers import DictProxy
+import sys
+from PySide6.QtCharts import QBarSet, QBarSeries, QChart, QBarCategoryAxis, QValueAxis, QChartView
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QPushButton, QVBoxLayout
+from PySide6.QtCore import Slot, Signal, Qt, QThread, QThreadPool
+from PySide6.QtGui import QPainter
 
-import serial
-from serial.tools import list_ports
+from serial_device import serial_device_manager
 
-import struct
-from enum import Enum
+import random as rand
 
-class serial_device():
-    def __init__(self):        
-        # Struct format:
-        # <   = little endian
-        # 5f  = 5 floats
-        self.__packet_format = "<5f"
-        self.__packet_size = struct.calcsize(self.__packet_format)
 
-        self.__key1 = b"\xAA"
-        self.__key2 = b"\x55"
+class DataView(QWidget):
+    newDataGenerated = Signal(list)
 
-        self.ser: serial.Serial
-        self.state = SERIAL_STATES.CONNECT
+    def __init__(self, parent=None):
+        super(DataView, self).__init__(parent)
+        # super().__init__()
 
-    def connect(self, port: str, baudrate: int):
-        self.ser = serial.Serial(port=port, baudrate=baudrate)
-    
-    def read_packet(self):
-        data = self.ser.read(self.__packet_size)
-        if len(data) == self.__packet_size:
-            return list(struct.unpack(self.__packet_format, data))
-    
-    def sync(self):
-        return \
-            self.ser.read() == self.__key1 and \
-            self.ser.read() == self.__key2
+        self.setWindowTitle("PIU Pad DataView")
+        self.set_0 = QBarSet("1")
 
-class serial_device_process(Process):
-    def __init__(self, port: str, baudrate: int, shared_device_data: DictProxy[str, list[float]]):
-        super().__init__(daemon=True)
-        self.exit = multiprocessing.Event()
+        self.set_0.append([1, 2, 3, 4, 5])
 
-        self.serial_dev = serial_device()
-        self.port = port
-        self.baudrate = baudrate
+        self.series = QBarSeries()
+        self.series.append(self.set_0)
 
-        self.shared_device_data = shared_device_data
+        self.chart = QChart()
+        self.chart.addSeries(self.series)
+        # self.chart.setAnimationOptions(QChart.SeriesAnimations)
 
-    def proc_loop(self):
-        match self.serial_dev.state:
-            case SERIAL_STATES.CONNECT:
-                try:
-                    self.serial_dev.connect(self.port, self.baudrate)
-                    self.serial_dev.state = SERIAL_STATES.SYNC
+        self.categories = ["1", "2", "3", "4", "5"]
+        self.axis_x = QBarCategoryAxis()
+        self.axis_x.append(self.categories)
+        self.chart.addAxis(self.axis_x, Qt.AlignBottom)
+        self.series.attachAxis(self.axis_x)
 
-                except Exception as e:
-                    self.shutdown()
-                    print(e)
-            
-            case SERIAL_STATES.SYNC:
-                try:
-                    if self.serial_dev.sync():
-                        self.serial_dev.state = SERIAL_STATES.PARSE
+        self.axis_y = QValueAxis()
+        self.axis_y.setRange(0, 3.3)
+        # self.chart.addAxis(self.axis_y, Qt.AlignLeft)
+        self.series.attachAxis(self.axis_y)
 
-                except Exception as e:
-                    self.shutdown()
-                    print(e)
-            
-            case SERIAL_STATES.PARSE:
-                try: 
-                    self.shared_device_data[self.port] = self.serial_dev.read_packet().copy()
+        self.chart.legend().setVisible(False)
+        self.chart.setBackgroundVisible(False)
+        # self.chart.legend().setAlignment(Qt.AlignBottom)
 
-                    self.serial_dev.state = SERIAL_STATES.SYNC
+        self._chart_view = QChartView(self.chart)
+        self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-                except Exception as e:
-                    self.shutdown()
-                    print(e)
+        self.button = QPushButton("Change data")
+        self.button.clicked.connect(self.generateNewData)
+        self.newDataGenerated.connect(self.changeData)
 
-    def run(self):
-        while not self.exit.is_set():
-            self.proc_loop()
+        self.qvboxlayout = QVBoxLayout()
+        self.qvboxlayout.addWidget(self._chart_view)
+        self.qvboxlayout.addWidget(self.button)
+        self.setLayout(self.qvboxlayout)
 
-    def shutdown(self):
-        try:
-            self.app.ser.close()
-        except Exception as e:
-            print(e)
+        # self.setCentralWidget(self._chart_view)
 
-        self.exit.set()
+    @Slot()
+    def generateNewData(self):
+        data = [rand.uniform(0,3.3), rand.uniform(0,3.3), rand.uniform(0,3.3), rand.uniform(0,3.3), rand.uniform(0,3.3)]
+        self.newDataGenerated.emit(data)
 
-class SERIAL_STATES(Enum):
-    CONNECT=0,
-    SYNC=1,
-    PARSE=2
-
-class serial_device_manager():
-    def __init__(self, shared_dict: DictProxy[str, list[float]]):
-        self.shared_device_data = shared_dict
-        self.serial_devices = {}
-
-    def __get_all_pico_com(self):
-        pi_devices = set()
-
-        RP_VID="2E8A"
-        for port, desc, hwid in sorted(list_ports.comports()):
-            if RP_VID.lower() in hwid.lower():
-                pi_devices.add(port)
-        
-        return pi_devices
-    
-    def update_port(self):
-        new_serial_devices = self.__get_all_pico_com()
-        add_devices = new_serial_devices - self.serial_devices.keys()
-        rem_devices = self.serial_devices.keys() - new_serial_devices
-
-        if len(add_devices) <= 0 and len(rem_devices) <= 0: return
-        
-        for device in add_devices:
-            self.serial_devices[device] = serial_device_process(device, 115200, self.shared_device_data)
-            self.serial_devices[device].start()
-            # print("Serial Process Started")
-
-        for device in rem_devices:
-            self.serial_devices[device].shutdown()
-            # print("Serial Process Shutdown")
-
-            self.shared_device_data.pop(device)
-            self.serial_devices.pop(device)
-    
-    def shutdown(self):
-        try:
-            for proc in self.serial_devices.values():
-                proc.shutdown()
-            pass
-        except Exception as e:
-            print(e)
+    @Slot(list)
+    def changeData(self, data):
+        for i, d in enumerate(data):
+            self.set_0.replace(i, d)
 
 if __name__ == "__main__":
-    with Manager() as manager:
-        d = manager.dict()
-        device_manager = serial_device_manager(shared_dict=d)
+    # dev_manager = serial_device_manager()
+    app = QApplication(sys.argv)
+    button = QPushButton("Change Data")
+    DV = DataView()
+    DV.resize(420, 300)
+    DV.show()
+    sys.exit(app.exec())
+    
+    # app.exec()
+    # while True:
 
-        while True:
-            device_manager.update_port()
-            print(d)
+    #     device_manager.update_port()
+    #     print(device_manager.shared_device_data)

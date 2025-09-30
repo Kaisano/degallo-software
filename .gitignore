@@ -49,3 +49,5 @@ build-*
 build_*
 .DS_Store
 *.pdf
+
+__pycache__/
